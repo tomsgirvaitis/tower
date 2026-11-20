@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Papīra Zivju Tower Defense</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+    video, canvas { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; object-fit: cover; }
+    #ui {
+      position: fixed; bottom: 15px; left: 10px; right: 10px;
+      display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 10;
+    }
+    .panel {
+      background: rgba(0, 0, 0, 0.7); color: white; padding: 8px 16px;
+      border-radius: 12px; font-size: 15px; display: flex; gap: 15px;
+    }
+    .buttons { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+    button {
+      padding: 12px 16px; font-size: 14px; font-weight: bold; border: none;
+      border-radius: 10px; background: #ff9800; color: #fff; cursor: pointer;
+    }
+    button:disabled { background: #555; color: #999; }
+    #scanBtn { background: #4CAF50; font-size: 16px; padding: 14px 24px; }
+  </style>
+</head>
+<body>
+
+  <video id="video" autoplay playsinline></video>
+  <canvas id="gameCanvas"></canvas>
+
+  <div id="ui">
+    <div class="panel">
+      <span>🐟 Monētas: <b id="coins">15</b></span>
+      <span>🏰 Torņa HP: <b id="hp">100</b></span>
+      <span>🔫 Līmenis: <b id="lvl">1</b></span>
+    </div>
+    <div class="buttons">
+      <button id="scanBtn" onclick="scanPaper()">📷 Skenēt uzzīmēto taku</button>
+      <button id="upgSpeed" onclick="upgradeSpeed()" disabled>⚡ Ātrums (10)</button>
+      <button id="upgDamage" onclick="upgradeDamage()" disabled>💥 Jauda (15)</button>
+      <button id="upgMulti" onclick="upgradeMulti()" disabled>🔱 +Stobrs (25)</button>
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    let gameStarted = false;
+    let path = []; // Koordinātu punkti pa uzzīmēto līniju
+    let tower = null; // { x, y, range, fireRate, damage, barrels, cooldown }
+    let fishes = [];
+    let bullets = [];
+    let coins = 15;
+    let towerHp = 100;
+    let level = 1;
+    let spawnTimer = 0;
+
+    // 1. Ieslēdzam telefona aizmugurējo kameru
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+      .then(stream => { video.srcObject = stream; })
+      .catch(err => alert("Neizdevās piekļūt kamerai (vajag HTTPS): " + err));
+
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // 2. Nolasām uzzīmēto taku un torni no baltas papīra lapas
+    function scanPaper() {
+      // Uzzīmējam esošo kameras kadru uz canvas, lai nolasītu pikseļus
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+      const step = 12; // Skenējam ik pēc 12 pikseļiem ātrumam
+      let darkPoints = [];
+
+      for (let y = 40; y < canvas.height - 140; y += step) {
+        for (let x = 20; x < canvas.width - 20; x += step) {
+          const idx = (y * canvas.width + x) * 4;
+          const brightness = (imgData[idx] + imgData[idx + 1] + imgData[idx + 2]) / 3;
+          // Ja pikselis ir tumšs (uzzīmēts ar melnu/tumšu marķieri uz baltas lapas)
+          if (brightness < 85) {
+            darkPoints.push({ x, y });
+          }
+        }
+      }
+
+      if (darkPoints.length < 15) {
+        alert("Neatradu uzzīmētu taku! Uzzīmē tumšāku, biezāku līniju uz baltas lapas.");
+        return;
+      }
+
+      // Sakārtojam punktus secīgā takā (tuvākā kaimiņa algoritms no kreisās uz labo pusi)
+      darkPoints.sort((a, b) => a.x - b.x);
+      path = [darkPoints[0]];
+      let remaining = darkPoints.slice(1);
+
+      while (remaining.length > 0) {
+        const last = path[path.length - 1];
+        let nearestIdx = 0;
+        let minDist = Infinity;
+
+        for (let i = 0; i < remaining.length; i++) {
+          const d = Math.hypot(remaining[i].x - last.x, remaining[i].y - last.y);
+          if (d < minDist) {
+            minDist = d;
+            nearestIdx = i;
+          }
+        }
+
+        if (minDist < 60) {
+          path.push(remaining[nearestIdx]);
+        }
+        remaining.splice(nearestIdx, 1);
+      }
+
+      // Takas beigu punkts (kur uzzīmēts aplītis) kļūst par Torni
+      const endPoint = path[path.length - 1];
+      tower = {
+        x: endPoint.x,
+        y: endPoint.y,
+        range: 160,
+        fireRate: 55, // kadri starp šāvieniem
+        damage: 1,
+        barrels: 1,
+        cooldown: 0
+      };
+
+      gameStarted = true;
+      fishes = [];
+      bullets = [];
+      document.getElementById('scanBtn').innerText = "🔄 Pārskenēt";
+      updateUI();
+    }
+
+    // 3. Spēles cikls
+    function gameLoop() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (gameStarted && tower && path.length > 2) {
+        // Iezīmējam atpazīto taku ar vieglu zilu spīdumu
+        ctx.strokeStyle = "rgba(0, 180, 255, 0.35)";
+        ctx.lineWidth = 10;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(path[0].x, path[0].y);
+        for (let p of path) ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+
+        // Torņa šaušanas rādiuss
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(tower.x, tower.y, tower.range, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Zīmējam Torni virs uzzīmētā aplīša
+        ctx.fillStyle = "#37474F";
+        ctx.beginPath();
+        ctx.arc(tower.x, tower.y, 24, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#FF9800";
+        ctx.beginPath();
+        ctx.arc(tower.x, tower.y, 12, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Laižam laukā jaunas staigājošās zivis
+        spawnTimer++;
+        if (spawnTimer > 90) {
+          spawnTimer = 0;
+          fishes.push({
+            x: path[0].x,
+            y: path[0].y,
+            pathIdx: 1,
+            speed: 1.5 + level * 0.15,
+            hp: 2 + Math.floor(level / 2),
+            maxHp: 2 + Math.floor(level / 2),
+            wobble: 0
+          });
+        }
+
+        // Kustinām un zīmējam zivis
+        for (let i = fishes.length - 1; i >= 0; i--) {
+          const f = fishes[i];
+          const target = path[f.pathIdx];
+          if (!target) {
+            // Zivs sasniedza torni
+            towerHp -= 10;
+            fishes.splice(i, 1);
+            updateUI();
+            continue;
+          }
+
+          const dx = target.x - f.x;
+          const dy = target.y - f.y;
+          const dist = Math.hypot(dx, dy);
+
+          if (dist < 8) {
+            f.pathIdx++;
+          } else {
+            f.x += (dx / dist) * f.speed;
+            f.y += (dy / dist) * f.speed;
+          }
+
+          // Staigāšanas animācija (šūpošanās)
+          f.wobble += 0.25;
+          const legOffset = Math.sin(f.wobble) * 5;
+
+          // Zīmējam kājiņas
+          ctx.strokeStyle = "#FF5722";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(f.x - 4, f.y + 8);
+          ctx.lineTo(f.x - 4 + legOffset, f.y + 16);
+          ctx.moveTo(f.x + 4, f.y + 8);
+          ctx.lineTo(f.x + 4 - legOffset, f.y + 16);
+          ctx.stroke();
+
+          // Zīmējam zivs ķermeni un asti
+          ctx.fillStyle = "#FF7043";
+          ctx.beginPath();
+          ctx.ellipse(f.x, f.y, 14, 9, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.moveTo(f.x - 12, f.y);
+          ctx.lineTo(f.x - 20, f.y - 7);
+          ctx.lineTo(f.x - 20, f.y + 7);
+          ctx.fill();
+        }
+
+        // Torņa šaušana
+        if (tower.cooldown > 0) tower.cooldown--;
+        if (tower.cooldown <= 0 && fishes.length > 0) {
+          // Atrodam tuvākās zivis
+          const targets = fishes
+            .filter(f => Math.hypot(f.x - tower.x, f.y - tower.y) <= tower.range)
+            .slice(0, tower.barrels);
+
+          if (targets.length > 0) {
+            for (let t of targets) {
+              bullets.push({ x: tower.x, y: tower.y, target: t, speed: 7, damage: tower.damage });
+            }
+            tower.cooldown = tower.fireRate;
+          }
+        }
+
+        // Lodes
+        for (let i = bullets.length - 1; i >= 0; i--) {
+          const b = bullets[i];
+          const dx = b.target.x - b.x;
+          const dy = b.target.y - b.y;
+          const dist = Math.hypot(dx, dy);
+
+          if (dist < 12 || !fishes.includes(b.target)) {
+            if (fishes.includes(b.target)) {
+              b.target.hp -= b.damage;
+              if (b.target.hp <= 0) {
+                fishes.splice(fishes.indexOf(b.target), 1);
+                coins += 5;
+                updateUI();
+              }
+            }
+            bullets.splice(i, 1);
+          } else {
+            b.x += (dx / dist) * b.speed;
+            b.y += (dy / dist) * b.speed;
+            ctx.fillStyle = "#FFEB3B";
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, 5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      requestAnimationFrame(gameLoop);
+    }
+    gameLoop();
+
+    // 4. Torņa uzlabojumi (Upgrades)
+    function updateUI() {
+      document.getElementById('coins').innerText = coins;
+      document.getElementById('hp').innerText = Math.max(0, towerHp);
+      document.getElementById('lvl').innerText = level;
+      document.getElementById('upgSpeed').disabled = !gameStarted || coins < 10;
+      document.getElementById('upgDamage').disabled = !gameStarted || coins < 15;
+      document.getElementById('upgMulti').disabled = !gameStarted || coins < 25;
+    }
+
+    function upgradeSpeed() {
+      if (coins >= 10) { coins -= 10; tower.fireRate = Math.max(12, tower.fireRate - 10); level++; updateUI(); }
+    }
+    function upgradeDamage() {
+      if (coins >= 15) { coins -= 15; tower.damage += 1; level++; updateUI(); }
+    }
+    function upgradeMulti() {
+      if (coins >= 25) { coins -= 25; tower.barrels += 1; level++; updateUI(); }
+    }
+  </script>
+</body>
+</html>
