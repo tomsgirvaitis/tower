@@ -3,46 +3,58 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>3D Papīra Tower Defense WebAR</title>
+  <title>3D Papīra Tower Defense AR</title>
   <script type="importmap">
     {
       "imports": {
-        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
-        "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
       }
     }
   </script>
   <style>
-    body { margin: 0; overflow: hidden; font-family: sans-serif; background: #111; }
-    #container { width: 100vw; height: 100vh; position: relative; }
-    #tracker-badge {
-      position: fixed; top: 58px; left: 50%; transform: translateX(-50%);
-      background: rgba(239, 68, 68, 0.9); color: #fff;
-      padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: bold;
-      z-index: 20; transition: background 0.3s; white-space: nowrap;
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: #000; font-family: system-ui, -apple-system, sans-serif;
     }
-    #tracker-badge.found { background: rgba(16, 185, 129, 0.9); }
-    #scan-preview {
-      position: fixed; top: 95px; right: 12px; width: 110px; height: 110px;
-      border: 2px solid #38bdf8; border-radius: 8px; background: #fff;
-      z-index: 20; display: none;
+    /* Pilnekrāna kameras video */
+    #cam-video {
+      position: fixed; inset: 0;
+      width: 100vw; height: 100vh;
+      object-fit: cover; z-index: 1;
+    }
+    /* Caurspīdīgs 3D slānis pa virsu kamerai */
+    #three-canvas {
+      position: fixed; inset: 0;
+      width: 100vw; height: 100vh;
+      z-index: 2; pointer-events: none;
+    }
+    /* Palīgrāmis, kur jāietur papīra lapa skenējot */
+    #guide-frame {
+      position: fixed; top: 50%; left: 50%;
+      transform: translate(-50%, -52%);
+      width: 78vw; height: 55vh;
+      border: 3px dashed rgba(56, 189, 248, 0.85);
+      border-radius: 16px; z-index: 3; pointer-events: none;
+      display: flex; align-items: flex-start; justify-content: center;
+      padding-top: 10px; color: #38bdf8; font-weight: bold;
+      text-shadow: 0 1px 4px #000; font-size: 14px;
     }
     #hud {
       position: fixed; top: 12px; left: 12px; right: 12px;
-      display: flex; justify-content: space-between; pointer-events: none; z-index: 10;
+      display: flex; justify-content: space-between; z-index: 10;
     }
-    .stat-box {
-      background: rgba(15, 23, 42, 0.85); color: #fff; padding: 8px 14px;
-      border-radius: 10px; font-weight: bold; font-size: 14px;
+    .stat {
+      background: rgba(15, 23, 42, 0.85); color: #fff;
+      padding: 8px 14px; border-radius: 12px; font-weight: bold; font-size: 14px;
     }
     #controls {
-      position: fixed; bottom: 20px; left: 10px; right: 10px;
+      position: fixed; bottom: 18px; left: 10px; right: 10px;
       display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; z-index: 10;
     }
     button {
-      padding: 12px 14px; border: none; border-radius: 10px; font-weight: bold;
-      font-size: 14px; color: white; cursor: pointer;
+      padding: 12px 15px; border: none; border-radius: 12px;
+      font-weight: bold; font-size: 14px; color: #fff; cursor: pointer;
     }
     button:disabled { opacity: 0.4; }
     #btn-scan { background: #10b981; }
@@ -53,18 +65,18 @@
 </head>
 <body>
 
-  <div id="tracker-badge">🔍 Meklēju target.mind attēlu...</div>
-  <canvas id="scan-preview" width="120" height="120"></canvas>
-  <div id="container"></div>
+  <video id="cam-video" autoplay playsinline muted></video>
+  <canvas id="three-canvas"></canvas>
+  <div id="guide-frame">Novieto lapu rāmī un spied "Skenēt"</div>
 
   <div id="hud">
-    <div class="stat-box">🪙 <span id="coins">20</span></div>
-    <div class="stat-box">🌊 Vilnis: <span id="wave">1</span></div>
-    <div class="stat-box">❤️ Bāze: <span id="hp">100</span></div>
+    <div class="stat">🪙 <span id="coins">20</span></div>
+    <div class="stat">🌊 Vilnis: <span id="wave">1</span></div>
+    <div class="stat">❤️ Bāze: <span id="hp">100</span></div>
   </div>
 
   <div id="controls">
-    <button id="btn-scan" disabled>📷 Skenēt zīmējumu</button>
+    <button id="btn-scan">📷 Skenēt lapu</button>
     <button id="btn-speed" disabled>⚡ Ātrums (15)</button>
     <button id="btn-power" disabled>💥 Jauda (20)</button>
     <button id="btn-turret" disabled>🔫 +Stobrs (30)</button>
@@ -72,286 +84,326 @@
 
   <script type="module">
     import * as THREE from 'three';
-    import { MindARThree } from 'mindar-image-three';
 
-    const badge = document.getElementById('tracker-badge');
-    const previewCanvas = document.getElementById('scan-preview');
-    const previewCtx = previewCanvas.getContext('2d');
+    const video = document.getElementById('cam-video');
+    const canvas = document.getElementById('three-canvas');
+    const guideFrame = document.getElementById('guide-frame');
 
     let coins = 20, baseHp = 100, wave = 1, isPlaying = false;
     let pathPoints = [], towers = [], enemies = [], projectiles = [], spawnTimer = 0;
 
-    async function init() {
-      const mindarThree = new MindARThree({
-        container: document.querySelector("#container"),
-        imageTargetSrc: "./target.mind",
-        uiScanning: "no",
-        uiLoading: "no"
-      });
-
-      const { renderer, scene, camera } = mindarThree;
-      renderer.shadowMap.enabled = true;
-
-      scene.add(new THREE.AmbientLight(0xffffff, 0.9));
-      const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
-      dirLight.position.set(1, 2, 3);
-      dirLight.castShadow = true;
-      scene.add(dirLight);
-
-      const anchor = mindarThree.addAnchor(0);
-      const worldGroup = new THREE.Group();
-      anchor.group.add(worldGroup);
-
-      // Vizuāls rāmis uz lapas, lai uzreiz redzi, ka AR ir piesaistījies!
-      const borderGeo = new THREE.EdgesGeometry(new THREE.PlaneGeometry(0.95, 0.95));
-      const borderLine = new THREE.LineSegments(borderGeo, new THREE.LineBasicMaterial({ color: 0x10b981 }));
-      borderLine.position.z = 0.002;
-      anchor.group.add(borderLine);
-
-      anchor.onTargetFound = () => {
-        badge.innerText = "🎯 Lapa atpazīta! Spied 'Skenēt zīmējumu'";
-        badge.classList.add("found");
-      };
-
-      anchor.onTargetLost = () => {
-        badge.innerText = "🔍 Lapa pazuda — pavērs kameru uz marķieri";
-        badge.classList.remove("found");
-      };
-
-      await mindarThree.start();
-      document.getElementById('btn-scan').disabled = false;
-
-      // --- 3D SPĒLES FUNKCIJAS ---
-      function create3DTower(x, y, color = 0xef4444) {
-        const group = new THREE.Group();
-        group.position.set(x, y, 0);
-
-        const base = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.055, 0.07, 0.05, 16),
-          new THREE.MeshStandardMaterial({ color: 0x334155 })
-        );
-        base.rotation.x = Math.PI / 2;
-        base.position.z = 0.025;
-        group.add(base);
-
-        const head = new THREE.Group();
-        head.position.z = 0.065;
-        const dome = new THREE.Mesh(
-          new THREE.SphereGeometry(0.042, 16, 16),
-          new THREE.MeshStandardMaterial({ color })
-        );
-        head.add(dome);
-
-        const barrel = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.01, 0.012, 0.08, 8),
-          new THREE.MeshStandardMaterial({ color: 0x1e293b })
-        );
-        barrel.position.set(0.04, 0, 0);
-        barrel.rotation.z = -Math.PI / 2;
-        head.add(barrel);
-
-        group.add(head);
-        worldGroup.add(group);
-        return { mesh: group, head, x, y, range: 0.4, fireRate: 0.9, cooldown: 0, damage: 1, barrels: 1 };
+    // 1. Ieslēdzam aizmugurējo kameru pa visu ekrānu
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } },
+          audio: false
+        });
+        video.srcObject = stream;
+      } catch (e) {
+        alert("Kameras kļūda: " + e.message);
       }
+    }
+    startCamera();
 
-      function create3DWalkingFish(x, y) {
-        const fish = new THREE.Group();
-        fish.position.set(x, y, 0.035);
+    // 2. Three.js 3D scēna (caurspīdīgs fons virs kameras)
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
 
-        const body = new THREE.Mesh(
-          new THREE.SphereGeometry(0.03, 12, 12),
-          new THREE.MeshStandardMaterial({ color: 0xf97316 })
-        );
-        body.scale.set(1.5, 0.85, 0.9);
-        fish.add(body);
+    const scene = new THREE.Scene();
 
-        const legGeo = new THREE.CylinderGeometry(0.004, 0.004, 0.03);
-        const legMat = new THREE.MeshStandardMaterial({ color: 0xfef08a });
-        const legL = new THREE.Mesh(legGeo, legMat);
-        legL.rotation.x = Math.PI / 2;
-        legL.position.set(0, 0.014, -0.018);
-        const legR = legL.clone();
-        legR.position.set(0, -0.014, -0.018);
-        fish.add(legL, legR);
+    // Kamera skatās uz galdu ~45 grādu leņķī, lai būtu īsts 3D dziļums
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, -1.6, 1.8);
+    camera.lookAt(0, 0, 0);
 
-        worldGroup.add(fish);
-        return { mesh: fish, legL, legR, pathIdx: 1, speed: 0.14 + wave * 0.015, hp: 2 + wave, stepTime: 0 };
-      }
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
 
-      function scanDrawing() {
-        const video = mindarThree.video;
-        if (!video) return;
+    scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.3);
+    dirLight.position.set(1.5, -1.5, 3);
+    dirLight.castShadow = true;
+    scene.add(dirLight);
 
-        const size = 120;
-        previewCtx.drawImage(video, 0, 0, size, size);
-        const data = previewCtx.getImageData(0, 0, size, size).data;
+    const worldGroup = new THREE.Group();
+    scene.add(worldGroup);
 
-        let blackPts = [], redPts = [];
-        for (let y = 15; y < size - 15; y += 2) {
-          for (let x = 15; x < size - 15; x += 2) {
-            const i = (y * size + x) * 4;
-            const r = data[i], g = data[i + 1], b = data[i + 2];
-            const wx = ((x / size) - 0.5) * 0.9;
-            const wy = (0.5 - (y / size)) * 0.9;
+    // Ēnu uztvērējs uz galda virsmas
+    const shadowGround = new THREE.Mesh(
+      new THREE.PlaneGeometry(3, 3),
+      new THREE.ShadowMaterial({ opacity: 0.35 })
+    );
+    shadowGround.receiveShadow = true;
+    worldGroup.add(shadowGround);
 
-            if (r > 130 && g < 85 && b < 85) {
-              redPts.push({ x: wx, y: wy });
-              previewCtx.fillStyle = "red";
-              previewCtx.fillRect(x, y, 2, 2);
-            } else if (r < 85 && g < 85 && b < 85) {
-              blackPts.push({ x: wx, y: wy });
-              previewCtx.fillStyle = "#00e5ff";
-              previewCtx.fillRect(x, y, 2, 2);
-            }
-          }
-        }
+    // 3. 3D Tornis un 3D Zivs
+    function create3DTower(x, y, color = 0xef4444) {
+      const group = new THREE.Group();
+      group.position.set(x, y, 0);
 
-        // Parādām mazo skenēšanas rezultāta lodziņu uz 3 sekundēm
-        previewCanvas.style.display = "block";
-        setTimeout(() => { previewCanvas.style.display = "none"; }, 3000);
+      const base = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.08, 0.11, 0.08, 16),
+        new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.4 })
+      );
+      base.rotation.x = Math.PI / 2;
+      base.position.z = 0.04;
+      base.castShadow = true;
+      group.add(base);
 
-        while (worldGroup.children.length > 0) worldGroup.remove(worldGroup.children[0]);
-        towers = []; enemies = []; projectiles = [];
+      const head = new THREE.Group();
+      head.position.z = 0.1;
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(0.065, 16, 16),
+        new THREE.MeshStandardMaterial({ color, metalness: 0.3, roughness: 0.3 })
+      );
+      dome.castShadow = true;
+      head.add(dome);
 
-        if (blackPts.length > 5) {
-          blackPts.sort((a, b) => a.x - b.x);
-          pathPoints = [blackPts[0]];
-          for (let pt of blackPts) {
-            const last = pathPoints[pathPoints.length - 1];
-            const d = Math.hypot(pt.x - last.x, pt.y - last.y);
-            if (d > 0.04 && d < 0.25) pathPoints.push(pt);
-          }
-        } else {
-          pathPoints = [{ x: -0.4, y: 0.2 }, { x: -0.1, y: -0.2 }, { x: 0.2, y: 0.2 }, { x: 0.4, y: 0 }];
-        }
+      const barrel = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.014, 0.018, 0.13, 8),
+        new THREE.MeshStandardMaterial({ color: 0x0f172a })
+      );
+      barrel.position.set(0.06, 0, 0);
+      barrel.rotation.z = -Math.PI / 2;
+      barrel.castShadow = true;
+      head.add(barrel);
 
-        const stoneGeo = new THREE.CylinderGeometry(0.028, 0.032, 0.008, 12);
-        const stoneMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8 });
-        for (let p of pathPoints) {
-          const stone = new THREE.Mesh(stoneGeo, stoneMat);
-          stone.rotation.x = Math.PI / 2;
-          stone.position.set(p.x, p.y, 0.004);
-          worldGroup.add(stone);
-        }
-
-        if (redPts.length > 0) {
-          for (let rp of redPts) {
-            if (!towers.some(t => Math.hypot(t.x - rp.x, t.y - rp.y) < 0.12)) {
-              towers.push(create3DTower(rp.x, rp.y, 0xef4444));
-            }
-          }
-        } else {
-          const last = pathPoints[pathPoints.length - 1];
-          towers.push(create3DTower(last.x, last.y + 0.14, 0x3b82f6));
-        }
-
-        isPlaying = true;
-        updateUI();
-      }
-
-      function updateUI() {
-        document.getElementById('coins').innerText = coins;
-        document.getElementById('hp').innerText = Math.max(0, baseHp);
-        document.getElementById('wave').innerText = wave;
-        document.getElementById('btn-speed').disabled = !isPlaying || coins < 15;
-        document.getElementById('btn-power').disabled = !isPlaying || coins < 20;
-        document.getElementById('btn-turret').disabled = !isPlaying || coins < 30;
-      }
-
-      document.getElementById('btn-scan').onclick = scanDrawing;
-      document.getElementById('btn-speed').onclick = () => {
-        if (coins >= 15) { coins -= 15; towers.forEach(t => t.fireRate = Math.max(0.2, t.fireRate * 0.75)); updateUI(); }
-      };
-      document.getElementById('btn-power').onclick = () => {
-        if (coins >= 20) { coins -= 20; towers.forEach(t => t.damage += 1); updateUI(); }
-      };
-      document.getElementById('btn-turret').onclick = () => {
-        if (coins >= 30) {
-          coins -= 30;
-          towers.forEach(t => {
-            t.barrels += 1;
-            const extraBarrel = new THREE.Mesh(
-              new THREE.CylinderGeometry(0.01, 0.012, 0.08, 8),
-              new THREE.MeshStandardMaterial({ color: 0xfacc15 })
-            );
-            extraBarrel.position.set(0.04, 0.02 * (t.barrels - 1), 0);
-            extraBarrel.rotation.z = -Math.PI / 2;
-            t.head.add(extraBarrel);
-          });
-          updateUI();
-        }
-      };
-
-      const clock = new THREE.Clock();
-      renderer.setAnimationLoop(() => {
-        const dt = clock.getDelta();
-        if (isPlaying && pathPoints.length > 1) {
-          spawnTimer += dt;
-          if (spawnTimer > Math.max(0.8, 2.5 - wave * 0.2)) {
-            spawnTimer = 0;
-            enemies.push(create3DWalkingFish(pathPoints[0].x, pathPoints[0].y));
-          }
-          for (let i = enemies.length - 1; i >= 0; i--) {
-            const e = enemies[i];
-            const target = pathPoints[e.pathIdx];
-            if (!target) { baseHp -= 10; worldGroup.remove(e.mesh); enemies.splice(i, 1); updateUI(); continue; }
-            const dx = target.x - e.mesh.position.x, dy = target.y - e.mesh.position.y;
-            const dist = Math.hypot(dx, dy);
-            if (dist < 0.025) e.pathIdx++;
-            else {
-              e.mesh.position.x += (dx / dist) * e.speed * dt;
-              e.mesh.position.y += (dy / dist) * e.speed * dt;
-              e.mesh.rotation.z = Math.atan2(dy, dx);
-            }
-            e.stepTime += dt * 15;
-            e.legL.rotation.y = Math.sin(e.stepTime) * 0.6;
-            e.legR.rotation.y = -Math.sin(e.stepTime) * 0.6;
-          }
-          for (let t of towers) {
-            t.cooldown -= dt;
-            const inRange = enemies.filter(e => Math.hypot(e.mesh.position.x - t.x, e.mesh.position.y - t.y) <= t.range);
-            if (inRange.length > 0) {
-              const primary = inRange[0];
-              t.head.rotation.z = Math.atan2(primary.mesh.position.y - t.y, primary.mesh.position.x - t.x);
-              if (t.cooldown <= 0) {
-                t.cooldown = t.fireRate;
-                for (let targetFish of inRange.slice(0, t.barrels)) {
-                  const bulletMesh = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 8), new THREE.MeshBasicMaterial({ color: 0xfacc15 }));
-                  bulletMesh.position.set(t.x, t.y, 0.065);
-                  worldGroup.add(bulletMesh);
-                  projectiles.push({ mesh: bulletMesh, target: targetFish, damage: t.damage });
-                }
-              }
-            }
-          }
-          for (let i = projectiles.length - 1; i >= 0; i--) {
-            const p = projectiles[i];
-            if (!enemies.includes(p.target)) { worldGroup.remove(p.mesh); projectiles.splice(i, 1); continue; }
-            const dx = p.target.mesh.position.x - p.mesh.position.x, dy = p.target.mesh.position.y - p.mesh.position.y;
-            const dist = Math.hypot(dx, dy);
-            if (dist < 0.03) {
-              p.target.hp -= p.damage;
-              if (p.target.hp <= 0) {
-                worldGroup.remove(p.target.mesh);
-                enemies.splice(enemies.indexOf(p.target), 1);
-                coins += 5;
-                if (coins % 25 === 0) wave++;
-                updateUI();
-              }
-              worldGroup.remove(p.mesh);
-              projectiles.splice(i, 1);
-            } else {
-              p.mesh.position.x += (dx / dist) * 0.9 * dt;
-              p.mesh.position.y += (dy / dist) * 0.9 * dt;
-            }
-          }
-        }
-        renderer.render(scene, camera);
-      });
+      group.add(head);
+      worldGroup.add(group);
+      return { mesh: group, head, x, y, range: 0.65, fireRate: 0.85, cooldown: 0, damage: 1, barrels: 1 };
     }
 
-    init();
+    function create3DWalkingFish(x, y) {
+      const fish = new THREE.Group();
+      fish.position.set(x, y, 0.05);
+
+      const body = new THREE.Mesh(
+        new THREE.SphereGeometry(0.045, 14, 14),
+        new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.3 })
+      );
+      body.scale.set(1.5, 0.85, 0.9);
+      body.castShadow = true;
+      fish.add(body);
+
+      const tail = new THREE.Mesh(
+        new THREE.ConeGeometry(0.032, 0.05, 4),
+        new THREE.MeshStandardMaterial({ color: 0xea580c })
+      );
+      tail.rotation.z = -Math.PI / 2;
+      tail.position.x = -0.07;
+      fish.add(tail);
+
+      const legGeo = new THREE.CylinderGeometry(0.006, 0.006, 0.045);
+      const legMat = new THREE.MeshStandardMaterial({ color: 0xfef08a });
+      const legL = new THREE.Mesh(legGeo, legMat);
+      legL.rotation.x = Math.PI / 2;
+      legL.position.set(0, 0.022, -0.028);
+      const legR = legL.clone();
+      legR.position.set(0, -0.022, -0.028);
+      fish.add(legL, legR);
+
+      worldGroup.add(fish);
+      return { mesh: fish, legL, legR, pathIdx: 1, speed: 0.22 + wave * 0.02, hp: 2 + wave, stepTime: 0 };
+    }
+
+    // 4. Nolasām zīmējumu no kameras centra (kur ir rāmis)
+    function scanPaper() {
+      if (!video.videoWidth) return;
+
+      const size = 160;
+      const off = document.createElement('canvas');
+      off.width = size;
+      off.height = size;
+      const ctx = off.getContext('2d');
+
+      // Izgriežam tieši rāmja apgabalu no kameras
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      ctx.drawImage(video, vw * 0.15, vh * 0.2, vw * 0.7, vh * 0.6, 0, 0, size, size);
+      const data = ctx.getImageData(0, 0, size, size).data;
+
+      let blackPts = [], redPts = [];
+      for (let y = 10; y < size - 10; y += 3) {
+        for (let x = 10; x < size - 10; x += 3) {
+          const i = (y * size + x) * 4;
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          const wx = ((x / size) - 0.5) * 1.5;
+          const wy = (0.5 - (y / size)) * 1.1;
+
+          if (r > 135 && g < 85 && b < 85) redPts.push({ x: wx, y: wy });
+          else if (r < 85 && g < 85 && b < 85) blackPts.push({ x: wx, y: wy });
+        }
+      }
+
+      while (worldGroup.children.length > 1) worldGroup.remove(worldGroup.children[1]);
+      towers = []; enemies = []; projectiles = [];
+
+      if (blackPts.length > 5) {
+        blackPts.sort((a, b) => a.x - b.x);
+        pathPoints = [blackPts[0]];
+        for (let pt of blackPts) {
+          const last = pathPoints[pathPoints.length - 1];
+          const d = Math.hypot(pt.x - last.x, pt.y - last.y);
+          if (d > 0.06 && d < 0.35) pathPoints.push(pt);
+        }
+      } else {
+        pathPoints = [{ x: -0.65, y: 0.25 }, { x: -0.2, y: -0.25 }, { x: 0.25, y: 0.25 }, { x: 0.65, y: 0 }];
+      }
+
+      // 3D takas akmeņi
+      const stoneGeo = new THREE.CylinderGeometry(0.045, 0.05, 0.012, 12);
+      const stoneMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8 });
+      for (let p of pathPoints) {
+        const stone = new THREE.Mesh(stoneGeo, stoneMat);
+        stone.rotation.x = Math.PI / 2;
+        stone.position.set(p.x, p.y, 0.006);
+        stone.receiveShadow = true;
+        worldGroup.add(stone);
+      }
+
+      // 3D torņi
+      if (redPts.length > 0) {
+        for (let rp of redPts) {
+          if (!towers.some(t => Math.hypot(t.x - rp.x, t.y - rp.y) < 0.2)) {
+            towers.push(create3DTower(rp.x, rp.y, 0xef4444));
+          }
+        }
+      } else {
+        const last = pathPoints[pathPoints.length - 1];
+        towers.push(create3DTower(last.x, last.y + 0.22, 0x3b82f6));
+      }
+
+      guideFrame.style.display = 'none';
+      isPlaying = true;
+      updateUI();
+    }
+
+    function updateUI() {
+      document.getElementById('coins').innerText = coins;
+      document.getElementById('hp').innerText = Math.max(0, baseHp);
+      document.getElementById('wave').innerText = wave;
+      document.getElementById('btn-speed').disabled = !isPlaying || coins < 15;
+      document.getElementById('btn-power').disabled = !isPlaying || coins < 20;
+      document.getElementById('btn-turret').disabled = !isPlaying || coins < 30;
+    }
+
+    document.getElementById('btn-scan').onclick = scanPaper;
+    document.getElementById('btn-speed').onclick = () => {
+      if (coins >= 15) { coins -= 15; towers.forEach(t => t.fireRate = Math.max(0.2, t.fireRate * 0.75)); updateUI(); }
+    };
+    document.getElementById('btn-power').onclick = () => {
+      if (coins >= 20) { coins -= 20; towers.forEach(t => t.damage += 1); updateUI(); }
+    };
+    document.getElementById('btn-turret').onclick = () => {
+      if (coins >= 30) {
+        coins -= 30;
+        towers.forEach(t => {
+          t.barrels += 1;
+          const extraBarrel = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.014, 0.018, 0.13, 8),
+            new THREE.MeshStandardMaterial({ color: 0xfacc15 })
+          );
+          extraBarrel.position.set(0.06, 0.03 * (t.barrels - 1), 0);
+          extraBarrel.rotation.z = -Math.PI / 2;
+          t.head.add(extraBarrel);
+        });
+        updateUI();
+      }
+    };
+
+    // 5. 3D Animācijas cikls
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = clock.getDelta();
+
+      if (isPlaying && pathPoints.length > 1) {
+        spawnTimer += dt;
+        if (spawnTimer > Math.max(0.7, 2.2 - wave * 0.2)) {
+          spawnTimer = 0;
+          enemies.push(create3DWalkingFish(pathPoints[0].x, pathPoints[0].y));
+        }
+
+        for (let i = enemies.length - 1; i >= 0; i--) {
+          const e = enemies[i];
+          const target = pathPoints[e.pathIdx];
+          if (!target) {
+            baseHp -= 10;
+            worldGroup.remove(e.mesh);
+            enemies.splice(i, 1);
+            updateUI();
+            continue;
+          }
+          const dx = target.x - e.mesh.position.x, dy = target.y - e.mesh.position.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist < 0.04) e.pathIdx++;
+          else {
+            e.mesh.position.x += (dx / dist) * e.speed * dt;
+            e.mesh.position.y += (dy / dist) * e.speed * dt;
+            e.mesh.rotation.z = Math.atan2(dy, dx);
+          }
+          e.stepTime += dt * 15;
+          e.legL.rotation.y = Math.sin(e.stepTime) * 0.6;
+          e.legR.rotation.y = -Math.sin(e.stepTime) * 0.6;
+        }
+
+        for (let t of towers) {
+          t.cooldown -= dt;
+          const inRange = enemies.filter(e => Math.hypot(e.mesh.position.x - t.x, e.mesh.position.y - t.y) <= t.range);
+          if (inRange.length > 0) {
+            const primary = inRange[0];
+            t.head.rotation.z = Math.atan2(primary.mesh.position.y - t.y, primary.mesh.position.x - t.x);
+            if (t.cooldown <= 0) {
+              t.cooldown = t.fireRate;
+              for (let targetFish of inRange.slice(0, t.barrels)) {
+                const bullet = new THREE.Mesh(
+                  new THREE.SphereGeometry(0.02, 8, 8),
+                  new THREE.MeshBasicMaterial({ color: 0xfacc15 })
+                );
+                bullet.position.set(t.x, t.y, 0.1);
+                worldGroup.add(bullet);
+                projectiles.push({ mesh: bullet, target: targetFish, damage: t.damage });
+              }
+            }
+          }
+        }
+
+        for (let i = projectiles.length - 1; i >= 0; i--) {
+          const p = projectiles[i];
+          if (!enemies.includes(p.target)) {
+            worldGroup.remove(p.mesh);
+            projectiles.splice(i, 1);
+            continue;
+          }
+          const dx = p.target.mesh.position.x - p.mesh.position.x, dy = p.target.mesh.position.y - p.mesh.position.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist < 0.05) {
+            p.target.hp -= p.damage;
+            if (p.target.hp <= 0) {
+              worldGroup.remove(p.target.mesh);
+              enemies.splice(enemies.indexOf(p.target), 1);
+              coins += 5;
+              if (coins % 25 === 0) wave++;
+              updateUI();
+            }
+            worldGroup.remove(p.mesh);
+            projectiles.splice(i, 1);
+          } else {
+            p.mesh.position.x += (dx / dist) * 1.4 * dt;
+            p.mesh.position.y += (dy / dist) * 1.4 * dt;
+          }
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+    animate();
   </script>
 </body>
 </html>
